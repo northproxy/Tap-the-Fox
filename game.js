@@ -1,5 +1,7 @@
 // === Tap the Fox — game.js ===
-// MVP 0.2 — multiple facades, horizontal scrolling
+// MVP 0.3 — score, completion screen, restart
+// Level data  → levels.js
+// UI overlays → ui.js
 
 // ─── Canvas setup ───────────────────────────────────────────────
 const canvas = document.getElementById('gameCanvas');
@@ -13,62 +15,72 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 
 
-// Level data lives in levels.js — edit your foxes and facades there.
-
 // ─── Game state ─────────────────────────────────────────────────
-// Each level gets its own loaded image objects and found-state.
-const state = levels.map(lvl => ({
-  facadeImg:      null,
-  foxImg:         null,
-  facadeLoaded:   false,
-  foxLoaded:      false,
-  foxFound:       false,
-  highlightAlpha: 0,
-}));
+// Each level gets its own image objects and found-state.
+// initState() builds this fresh — also used by restartGame().
+function initState() {
+  return levels.map(() => ({
+    facadeImg:      null,
+    foxImg:         null,
+    facadeLoaded:   false,
+    foxLoaded:      false,
+    foxFound:       false,
+    highlightAlpha: 0,
+  }));
+}
+
+let state = initState();
 
 // Scrolling
-let scrollX      = 0;       // how many pixels we've scrolled right
+let scrollX      = 0;
 let isDragging   = false;
-let dragStartX   = 0;       // pointer X when drag began
-let scrollAtDrag = 0;       // scrollX value when drag began
-let lastDragX    = 0;       // for momentum
-let velocity     = 0;       // pixels/frame for momentum scroll
+let dragStartX   = 0;
+let scrollAtDrag = 0;
+let lastDragX    = 0;
+let velocity     = 0;
+let dragDistance = 0;
+const TAP_THRESHOLD = 8;
 
 
 // ─── Image loading ──────────────────────────────────────────────
-// Each facade and fox image loads independently.
-// The game draws what's ready and shows placeholders for the rest.
+function loadImages() {
+  levels.forEach((lvl, i) => {
+    const s = state[i];
 
-levels.forEach((lvl, i) => {
-  const s = state[i];
+    const fImg = new Image();
+    fImg.onload  = () => { s.facadeImg = fImg; s.facadeLoaded = true;  draw(); };
+    fImg.onerror = () => {                      s.facadeLoaded = true;  draw(); };
+    fImg.src = lvl.facade;
 
-  const fImg = new Image();
-  fImg.onload  = () => { s.facadeLoaded = true;  s.facadeImg = fImg; draw(); };
-  fImg.onerror = () => { s.facadeLoaded = true;  s.facadeImg = null; draw(); };
-  fImg.src = lvl.facade;
+    const xImg = new Image();
+    xImg.onload  = () => { s.foxImg = xImg; s.foxLoaded = true; draw(); };
+    xImg.onerror = () => {                   s.foxLoaded = true; draw(); };
+    xImg.src = lvl.fox;
+  });
+}
 
-  const xImg = new Image();
-  xImg.onload  = () => { s.foxLoaded = true; s.foxImg = xImg; draw(); };
-  xImg.onerror = () => { s.foxLoaded = true; s.foxImg = null; draw(); };
-  xImg.src = lvl.fox;
-});
+
+// ─── Restart ────────────────────────────────────────────────────
+// Called by ui.js when the player taps "Play again".
+function restartGame() {
+  state    = initState();
+  scrollX  = 0;
+  velocity = 0;
+  loadImages();
+  draw();
+}
 
 
 // ─── Layout helpers ─────────────────────────────────────────────
-// Each facade fills the full screen height and keeps the image's
-// natural aspect ratio. Facades sit side by side with a small gap.
-
-const GAP = 24; // pixels between facades
+const GAP = 24;
 
 function facadeDrawWidth(index) {
   const img = state[index].facadeImg;
   const H   = canvas.height;
-  if (!img) return Math.round(H * 0.75); // placeholder width
+  if (!img) return Math.round(H * 0.75);
   return Math.round((img.naturalWidth / img.naturalHeight) * H);
 }
 
-// Returns the X position (on the canvas) where facade [index] starts,
-// taking scrollX into account.
 function facadeLeft(index) {
   let x = 0;
   for (let i = 0; i < index; i++) {
@@ -77,11 +89,10 @@ function facadeLeft(index) {
   return x - scrollX;
 }
 
-// Total width of all facades + gaps combined
 function totalStreetWidth() {
   let w = 0;
   levels.forEach((_, i) => { w += facadeDrawWidth(i) + GAP; });
-  return w - GAP; // no trailing gap
+  return w - GAP;
 }
 
 
@@ -90,33 +101,29 @@ function draw() {
   const W = canvas.width;
   const H = canvas.height;
 
-  // Background — deep night sky between buildings
   ctx.fillStyle = '#1a1008';
   ctx.fillRect(0, 0, W, H);
 
   levels.forEach((lvl, i) => {
-    const s    = state[i];
-    const x    = facadeLeft(i);
-    const dw   = facadeDrawWidth(i);
+    const s  = state[i];
+    const x  = facadeLeft(i);
+    const dw = facadeDrawWidth(i);
 
-    // Skip facades entirely off-screen (performance)
     if (x + dw < 0 || x > W) return;
 
-    // --- Facade image or placeholder ---
+    // Facade
     if (s.facadeImg) {
       ctx.drawImage(s.facadeImg, x, 0, dw, H);
     } else {
-      // Warm placeholder tile
       const colors = ['#c8a97a', '#b89060', '#d4b485'];
       ctx.fillStyle = colors[i % colors.length];
       ctx.fillRect(x, 0, dw, H);
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
-      ctx.font = '16px sans-serif';
-      ctx.textAlign = 'center';
+      ctx.fillStyle   = 'rgba(0,0,0,0.3)';
+      ctx.font        = '16px sans-serif';
+      ctx.textAlign   = 'center';
       ctx.fillText(`facade_0${i + 1}.jpg`, x + dw / 2, H / 2);
     }
 
-    // Scale factors: facade image space → screen space
     const scaleX = dw / (s.facadeImg ? s.facadeImg.naturalWidth  : dw);
     const scaleY = H  / (s.facadeImg ? s.facadeImg.naturalHeight : H);
 
@@ -125,35 +132,28 @@ function draw() {
     const foxScreenW =     lvl.foxWidth  * scaleX;
     const foxScreenH =     lvl.foxHeight * scaleY;
 
-    // --- Fox overlay ---
+    // Fox overlay
     if (s.foxImg) {
       ctx.drawImage(s.foxImg, foxScreenX, foxScreenY, foxScreenW, foxScreenH);
     }
 
-    // --- Highlight glow (plays after found) ---
+    // Glow highlight
     if (s.foxFound && s.highlightAlpha > 0) {
       const cx     = foxScreenX + foxScreenW / 2;
       const cy     = foxScreenY + foxScreenH / 2;
       const radius = Math.max(foxScreenW, foxScreenH) * 0.9;
-
-      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+      const grad   = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
       grad.addColorStop(0,   `rgba(255, 180, 50, ${s.highlightAlpha * 0.75})`);
       grad.addColorStop(0.5, `rgba(255, 120, 20, ${s.highlightAlpha * 0.4})`);
       grad.addColorStop(1,   `rgba(255, 80,  0,  0)`);
-
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fillStyle = grad;
       ctx.fill();
-
-      // Redraw fox on top of glow
-      if (s.foxImg) {
-        ctx.drawImage(s.foxImg, foxScreenX, foxScreenY, foxScreenW, foxScreenH);
-      }
+      if (s.foxImg) ctx.drawImage(s.foxImg, foxScreenX, foxScreenY, foxScreenW, foxScreenH);
     }
 
-    // --- Debug hitbox (dashed orange box) ---
-    // Remove this block once you're happy with hitbox positions.
+    // Debug hitbox — remove this block when hitboxes are tuned
     if (!s.foxFound) {
       const hx = getHitboxRect(i, x, scaleX, scaleY);
       ctx.strokeStyle = 'rgba(255, 120, 0, 0.5)';
@@ -164,11 +164,11 @@ function draw() {
     }
   });
 
-  // --- HUD: score badge (top-left) ---
   drawHUD();
-
-  // --- Scroll edge indicators ---
   drawScrollHints();
+
+  // Completion screen drawn last (on top of everything)
+  drawCompletionScreen();
 }
 
 
@@ -176,42 +176,32 @@ function draw() {
 function drawHUD() {
   const found = state.filter(s => s.foxFound).length;
   const total = levels.length;
-
   const label = `🦊 ${found} / ${total}`;
   const pad   = 12;
 
   ctx.font = 'bold 20px sans-serif';
-  const tw  = ctx.measureText(label).width;
+  const tw = ctx.measureText(label).width;
 
-  // Badge background
   ctx.fillStyle = 'rgba(20, 10, 0, 0.65)';
   roundRect(ctx, 16, 16, tw + pad * 2, 40, 10);
   ctx.fill();
 
-  // Badge text
   ctx.fillStyle = '#fff8e1';
   ctx.textAlign = 'left';
   ctx.fillText(label, 16 + pad, 16 + 27);
 }
 
 
-// ─── Scroll hint arrows ──────────────────────────────────────────
+// ─── Scroll hints ────────────────────────────────────────────────
 function drawScrollHints() {
   const W   = canvas.width;
   const H   = canvas.height;
   const max = totalStreetWidth() - W;
-
-  // Left arrow — show when not at the start
-  if (scrollX > 10) {
-    drawArrow(ctx, 28, H / 2, 'left');
-  }
-  // Right arrow — show when not at the end
-  if (scrollX < max - 10) {
-    drawArrow(ctx, W - 28, H / 2, 'right');
-  }
+  if (scrollX > 10)       drawArrow(28,     H / 2, 'left');
+  if (scrollX < max - 10) drawArrow(W - 28, H / 2, 'right');
 }
 
-function drawArrow(ctx, cx, cy, dir) {
+function drawArrow(cx, cy, dir) {
   const size = 18;
   ctx.save();
   ctx.globalAlpha = 0.55;
@@ -231,7 +221,7 @@ function drawArrow(ctx, cx, cy, dir) {
 }
 
 
-// ─── Utility: rounded rectangle ─────────────────────────────────
+// ─── Utilities ──────────────────────────────────────────────────
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -246,12 +236,8 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-
-// ─── Hitbox helper ──────────────────────────────────────────────
-// Returns hitbox rectangle in screen pixels for facade [index].
-// facadeScreenX = left edge of the facade on screen (after scrolling).
 function getHitboxRect(index, facadeScreenX, scaleX, scaleY) {
-  const lvl = levels[index];
+  const lvl        = levels[index];
   const foxCenterX = lvl.foxX + lvl.foxWidth  / 2;
   const foxCenterY = lvl.foxY + lvl.foxHeight / 2;
   return {
@@ -263,13 +249,22 @@ function getHitboxRect(index, facadeScreenX, scaleX, scaleY) {
 }
 
 
-// ─── Tap detection ──────────────────────────────────────────────
-// We only register a tap if the pointer didn't move much (not a scroll drag).
-let dragDistance = 0;
-const TAP_THRESHOLD = 8; // pixels — below this = tap, above = drag
+// ─── Completion check ────────────────────────────────────────────
+function checkCompletion() {
+  const allFound = state.every(s => s.foxFound);
+  if (allFound) {
+    // Small delay so the last glow animation is visible first
+    setTimeout(showCompletionScreen, 900);
+  }
+}
 
+
+// ─── Tap detection ──────────────────────────────────────────────
 function handleTap(screenX, screenY) {
-  if (dragDistance > TAP_THRESHOLD) return; // was a drag, not a tap
+  if (dragDistance > TAP_THRESHOLD) return;
+
+  // Let ui.js handle the tap first if completion screen is showing
+  if (handleCompletionTap(screenX, screenY)) return;
 
   levels.forEach((lvl, i) => {
     const s = state[i];
@@ -279,8 +274,8 @@ function handleTap(screenX, screenY) {
     const dw     = facadeDrawWidth(i);
     const scaleX = dw / (s.facadeImg ? s.facadeImg.naturalWidth  : dw);
     const scaleY = canvas.height / (s.facadeImg ? s.facadeImg.naturalHeight : canvas.height);
+    const hx     = getHitboxRect(i, x, scaleX, scaleY);
 
-    const hx = getHitboxRect(i, x, scaleX, scaleY);
     const hit = (
       screenX >= hx.x && screenX <= hx.x + hx.w &&
       screenY >= hx.y && screenY <= hx.y + hx.h
@@ -289,6 +284,7 @@ function handleTap(screenX, screenY) {
     if (hit) {
       s.foxFound = true;
       startHighlightAnimation(i);
+      checkCompletion();
     }
   });
 }
@@ -351,22 +347,17 @@ canvas.addEventListener('touchend', (e) => {
 
 
 // ─── Momentum scrolling ─────────────────────────────────────────
-// After releasing a drag, the street glides to a stop naturally.
 function startMomentum() {
   if (Math.abs(velocity) < 1) return;
-
   function step() {
-    velocity *= 0.92;               // friction — lower = slides further
+    velocity *= 0.92;
     scrollX   = clampScroll(scrollX - velocity);
     draw();
-    if (Math.abs(velocity) > 0.5) {
-      requestAnimationFrame(step);
-    }
+    if (Math.abs(velocity) > 0.5) requestAnimationFrame(step);
   }
   requestAnimationFrame(step);
 }
 
-// Keep scrollX inside valid bounds
 function clampScroll(val) {
   const max = Math.max(0, totalStreetWidth() - canvas.width);
   return Math.max(0, Math.min(max, val));
@@ -377,14 +368,12 @@ function clampScroll(val) {
 function startHighlightAnimation(index) {
   const s         = state[index];
   s.highlightAlpha = 0;
-
   const duration  = 1800;
   const peakAt    = 300;
   const startTime = performance.now();
 
   function animate(now) {
     const elapsed = now - startTime;
-
     if (elapsed < peakAt) {
       s.highlightAlpha = elapsed / peakAt;
     } else {
@@ -392,7 +381,6 @@ function startHighlightAnimation(index) {
     }
     s.highlightAlpha = Math.max(0, Math.min(1, s.highlightAlpha));
     draw();
-
     if (elapsed < duration) {
       requestAnimationFrame(animate);
     } else {
@@ -400,10 +388,10 @@ function startHighlightAnimation(index) {
       draw();
     }
   }
-
   requestAnimationFrame(animate);
 }
 
 
 // ─── Start ──────────────────────────────────────────────────────
+loadImages();
 resizeCanvas();

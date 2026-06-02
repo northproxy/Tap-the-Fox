@@ -8,7 +8,10 @@
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>
+
+  <!-- Load order matters: levels → ui → game -->
   <script src="levels.js"></script>
+  <script src="ui.js"></script>
   <script src="game.js"></script>
 </body>
 </html>
