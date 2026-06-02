@@ -1,5 +1,7 @@
 // === Tap the Fox — game.js ===
-// MVP 0.3 — score, completion screen, restart
+// MVP 0.3 — score, completion, restart
+// + centred start position
+// + smooth auto-scroll to next facade after fox found
 // Level data  → levels.js
 // UI overlays → ui.js
 
@@ -16,8 +18,6 @@ window.addEventListener('resize', resizeCanvas);
 
 
 // ─── Game state ─────────────────────────────────────────────────
-// Each level gets its own image objects and found-state.
-// initState() builds this fresh — also used by restartGame().
 function initState() {
   return levels.map(() => ({
     facadeImg:      null,
@@ -41,6 +41,10 @@ let velocity     = 0;
 let dragDistance = 0;
 const TAP_THRESHOLD = 8;
 
+// Auto-scroll lock — prevents player dragging while the street is
+// animating to the next facade automatically.
+let isAutoScrolling = false;
+
 
 // ─── Image loading ──────────────────────────────────────────────
 function loadImages() {
@@ -48,7 +52,7 @@ function loadImages() {
     const s = state[i];
 
     const fImg = new Image();
-    fImg.onload  = () => { s.facadeImg = fImg; s.facadeLoaded = true;  draw(); };
+    fImg.onload  = () => { s.facadeImg = fImg; s.facadeLoaded = true;  centreFirstFacade(); draw(); };
     fImg.onerror = () => {                      s.facadeLoaded = true;  draw(); };
     fImg.src = lvl.facade;
 
@@ -60,12 +64,39 @@ function loadImages() {
 }
 
 
+// ─── Centred start ──────────────────────────────────────────────
+// Called each time an image loads. Once facade_01 is ready we
+// know its real width and can compute the correct starting scrollX
+// so it sits centred on screen.
+function centreFirstFacade() {
+  if (state[0].facadeImg) {
+    scrollX = centredScrollFor(0);
+  }
+}
+
+// Returns the scrollX value that places facade [index] centred on screen.
+function centredScrollFor(index) {
+  const W  = canvas.width;
+  const dw = facadeDrawWidth(index);
+
+  // Left edge of facade [index] in street coordinates (without scroll)
+  let streetX = 0;
+  for (let i = 0; i < index; i++) {
+    streetX += facadeDrawWidth(i) + GAP;
+  }
+
+  // We want: streetX - scrollX + dw/2 = W/2
+  // So:      scrollX = streetX + dw/2 - W/2
+  return clampScroll(streetX + dw / 2 - W / 2);
+}
+
+
 // ─── Restart ────────────────────────────────────────────────────
-// Called by ui.js when the player taps "Play again".
 function restartGame() {
-  state    = initState();
-  scrollX  = 0;
-  velocity = 0;
+  state           = initState();
+  scrollX         = 0;
+  velocity        = 0;
+  isAutoScrolling = false;
   loadImages();
   draw();
 }
@@ -118,9 +149,9 @@ function draw() {
       const colors = ['#c8a97a', '#b89060', '#d4b485'];
       ctx.fillStyle = colors[i % colors.length];
       ctx.fillRect(x, 0, dw, H);
-      ctx.fillStyle   = 'rgba(0,0,0,0.3)';
-      ctx.font        = '16px sans-serif';
-      ctx.textAlign   = 'center';
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.font      = '16px sans-serif';
+      ctx.textAlign = 'center';
       ctx.fillText(`facade_0${i + 1}.jpg`, x + dw / 2, H / 2);
     }
 
@@ -166,8 +197,6 @@ function draw() {
 
   drawHUD();
   drawScrollHints();
-
-  // Completion screen drawn last (on top of everything)
   drawCompletionScreen();
 }
 
@@ -253,17 +282,58 @@ function getHitboxRect(index, facadeScreenX, scaleX, scaleY) {
 function checkCompletion() {
   const allFound = state.every(s => s.foxFound);
   if (allFound) {
-    // Small delay so the last glow animation is visible first
     setTimeout(showCompletionScreen, 900);
   }
+}
+
+
+// ─── Auto-scroll to next facade ─────────────────────────────────
+// After the glow animation finishes, smoothly slides the street
+// so the next unfound facade is centred on screen.
+// Uses an ease-out curve so it decelerates naturally as it arrives.
+
+function scrollToNextFacade() {
+  // Find the first facade that hasn't been found yet
+  const nextIndex = state.findIndex(s => !s.foxFound);
+  if (nextIndex === -1) return; // all found — completion screen handles this
+
+  const targetScrollX = centredScrollFor(nextIndex);
+
+  // Nothing to scroll — already there (e.g. on a wide desktop screen)
+  if (Math.abs(targetScrollX - scrollX) < 2) return;
+
+  const startScrollX = scrollX;
+  const distance     = targetScrollX - startScrollX;
+  const duration     = 600 + Math.abs(distance) * 0.25; // longer slide = more time
+  const startTime    = performance.now();
+
+  isAutoScrolling = true;
+  velocity        = 0; // cancel any momentum
+
+  function step(now) {
+    const elapsed  = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+
+    // Ease-out cubic: starts fast, decelerates smoothly to a stop
+    const eased = 1 - Math.pow(1 - progress, 3);
+
+    scrollX = clampScroll(startScrollX + distance * eased);
+    draw();
+
+    if (progress < 1) {
+      requestAnimationFrame(step);
+    } else {
+      isAutoScrolling = false;
+    }
+  }
+
+  requestAnimationFrame(step);
 }
 
 
 // ─── Tap detection ──────────────────────────────────────────────
 function handleTap(screenX, screenY) {
   if (dragDistance > TAP_THRESHOLD) return;
-
-  // Let ui.js handle the tap first if completion screen is showing
   if (handleCompletionTap(screenX, screenY)) return;
 
   levels.forEach((lvl, i) => {
@@ -283,8 +353,11 @@ function handleTap(screenX, screenY) {
 
     if (hit) {
       s.foxFound = true;
-      startHighlightAnimation(i);
-      checkCompletion();
+      // Glow plays first, then street scrolls to the next facade
+      startHighlightAnimation(i, () => {
+        checkCompletion();
+        scrollToNextFacade();
+      });
     }
   });
 }
@@ -292,6 +365,7 @@ function handleTap(screenX, screenY) {
 
 // ─── Scrolling — mouse ──────────────────────────────────────────
 canvas.addEventListener('mousedown', (e) => {
+  if (isAutoScrolling) return;
   isDragging   = true;
   dragStartX   = e.clientX;
   scrollAtDrag = scrollX;
@@ -300,7 +374,7 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
-  if (!isDragging) return;
+  if (!isDragging || isAutoScrolling) return;
   const delta  = dragStartX - e.clientX;
   dragDistance = Math.abs(delta);
   velocity     = e.clientX - lastDragX;
@@ -316,6 +390,7 @@ canvas.addEventListener('mouseleave', ()  => { isDragging = false; });
 // ─── Scrolling — touch ──────────────────────────────────────────
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
+  if (isAutoScrolling) return;
   const t      = e.touches[0];
   isDragging   = true;
   dragStartX   = t.clientX;
@@ -327,7 +402,7 @@ canvas.addEventListener('touchstart', (e) => {
 
 canvas.addEventListener('touchmove', (e) => {
   e.preventDefault();
-  if (!isDragging) return;
+  if (!isDragging || isAutoScrolling) return;
   const t      = e.touches[0];
   const delta  = dragStartX - t.clientX;
   dragDistance = Math.abs(delta);
@@ -348,7 +423,7 @@ canvas.addEventListener('touchend', (e) => {
 
 // ─── Momentum scrolling ─────────────────────────────────────────
 function startMomentum() {
-  if (Math.abs(velocity) < 1) return;
+  if (Math.abs(velocity) < 1 || isAutoScrolling) return;
   function step() {
     velocity *= 0.92;
     scrollX   = clampScroll(scrollX - velocity);
@@ -365,12 +440,13 @@ function clampScroll(val) {
 
 
 // ─── Highlight animation ─────────────────────────────────────────
-function startHighlightAnimation(index) {
-  const s         = state[index];
+// onComplete callback added — game calls scrollToNextFacade() from there
+function startHighlightAnimation(index, onComplete) {
+  const s          = state[index];
   s.highlightAlpha = 0;
-  const duration  = 1800;
-  const peakAt    = 300;
-  const startTime = performance.now();
+  const duration   = 1800;
+  const peakAt     = 300;
+  const startTime  = performance.now();
 
   function animate(now) {
     const elapsed = now - startTime;
@@ -381,11 +457,13 @@ function startHighlightAnimation(index) {
     }
     s.highlightAlpha = Math.max(0, Math.min(1, s.highlightAlpha));
     draw();
+
     if (elapsed < duration) {
       requestAnimationFrame(animate);
     } else {
       s.highlightAlpha = 0;
       draw();
+      if (onComplete) onComplete(); // ← triggers scroll after glow finishes
     }
   }
   requestAnimationFrame(animate);
