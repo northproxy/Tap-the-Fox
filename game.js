@@ -13,48 +13,7 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 
 
-// ─── Level data ─────────────────────────────────────────────────
-// Add as many facades as you like by following the same pattern.
-// Fox images follow your naming: fox_01.png, fox_02.png, etc.
-// All foxX / foxY positions are in the facade image's own pixel space
-// (top-left of the image = 0, 0).
-
-const levels = [
-  {
-    facade:       'assets/facades/facade_01.jpg',
-    fox:          'assets/foxes/fox_01.png',
-    foxX:         520,   // pixels from left of facade image
-    foxY:         340,   // pixels from top of facade image
-    foxWidth:     120,   // how large to draw the fox image
-    foxHeight:    120,
-    hitboxWidth:  200,   // tappable area — keep this larger than the fox
-    hitboxHeight: 200,
-    hint:         'Look near the upper windows.',
-  },
-  {
-    facade:       'assets/facades/facade_02.jpg',
-    fox:          'assets/foxes/fox_02.png',
-    foxX:         280,
-    foxY:         500,
-    foxWidth:     100,
-    foxHeight:    100,
-    hitboxWidth:  180,
-    hitboxHeight: 180,
-    hint:         'Check near the doorway.',
-  },
-  {
-    facade:       'assets/facades/facade_03.jpg',
-    fox:          'assets/foxes/fox_03.png',
-    foxX:         700,
-    foxY:         200,
-    foxWidth:     130,
-    foxHeight:    130,
-    hitboxWidth:  220,
-    hitboxHeight: 220,
-    hint:         'Something orange near the balcony.',
-  },
-];
-
+// Level data lives in levels.js — edit your foxes and facades there.
 
 // ─── Game state ─────────────────────────────────────────────────
 // Each level gets its own loaded image objects and found-state.
