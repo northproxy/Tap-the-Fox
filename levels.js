@@ -39,4 +39,39 @@ const levels = [
       hitboxHeight: 80,
       hint:         'Something orange near the balcony.',
     },
+    {
+      facade:       "assets/facades/facade_04.jpg",
+      fox:          "assets/foxes/fox_04.png",
+      foxX:         240,
+      foxY:         1010,
+      foxWidth:     60,
+      foxHeight:    45,
+      hitboxWidth:  80,
+      hitboxHeight: 65,
+      foxOpacity:   0.6,   // fox transparency, if not set when transparency=1
+      hint:         "Two small triangles peek above the roofline."
+     },
+     {
+      facade:       "assets/facades/facade_05.jpg",
+      fox:          "assets/foxes/fox_05.png",
+      foxX:         400,
+      foxY:         180,
+      foxWidth:     70,
+      foxHeight:    60,
+      hitboxWidth:  90,
+      hitboxHeight: 80,
+      hint:         "Two small triangles peek above the roofline."
+     },
+     {
+      facade:       "assets/facades/facade_06.jpg",
+      fox:          "assets/foxes/fox_06.png",
+      foxX:         370,
+      foxY:         860,
+      foxWidth:     80,
+      foxHeight:    80,
+      hitboxWidth:  100,
+      hitboxHeight: 100,
+      foxOpacity:   0.6,
+      hint:         "Two small triangles peek above the roofline."
+     },
   ];

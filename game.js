@@ -1,5 +1,5 @@
 // === Tap the Fox — game.js ===
-// MVP 0.4 — hints (6A) + find animations (6B)
+// MVP 0.4 — hints (6A) + find animations (6B) + sound (6C)
 // + centred start position
 // + smooth auto-scroll to next facade after fox found
 // Level data  → levels.js
@@ -26,9 +26,8 @@ function initState() {
     foxLoaded:      false,
     foxFound:       false,
     highlightAlpha: 0,
-    // 6B — per-level find animation state
-    foxScale:       1,      // bounce scale multiplier (drawn around fox centre)
-    pulseRings:     [],     // array of active pulse ring objects
+    foxScale:       1,
+    pulseRings:     [],
   }));
 }
 
@@ -44,7 +43,6 @@ let velocity     = 0;
 let dragDistance = 0;
 const TAP_THRESHOLD = 8;
 
-// Auto-scroll lock
 let isAutoScrolling = false;
 
 // ─── Hint state ─────────────────────────────────────────────────
@@ -62,21 +60,210 @@ function resetHint() {
   hintGlowRadius = 0;
 }
 
-// ─── Score bump state (6B) ───────────────────────────────────────
-// A brief +1 label that pops up near the HUD score then fades.
-// scoreBump.active drives a single animation at a time.
-const scoreBump = {
-  active:    false,
-  alpha:     0,
-  offsetY:   0,   // animates upward from 0
-  scale:     1,
-};
+// ─── Score bump state ────────────────────────────────────────────
+const scoreBump = { active: false, alpha: 0, offsetY: 0, scale: 1 };
 
 function triggerScoreBump() {
   scoreBump.active  = true;
   scoreBump.alpha   = 1;
   scoreBump.offsetY = 0;
-  scoreBump.scale   = 1.4;  // starts big, shrinks to 1 then fades
+  scoreBump.scale   = 1.4;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// 6C — AUDIO ENGINE
+// All sound is synthesised via Web Audio API — no external files.
+//
+// Architecture:
+//   AudioContext  (created on first user gesture, per browser policy)
+//   │
+//   ├─ masterGain  (overall volume — set to 0 when muted)
+//   │   ├─ chimeGain   → chime oscillators
+//   │   └─ ambientGain → ambient oscillator network
+//
+// Mute works by ramping masterGain to 0/1, so no clicks.
+// Ambient starts suspended; first unmute kick-starts it.
+// ════════════════════════════════════════════════════════════════
+
+let audioCtx     = null;
+let masterGain   = null;
+let ambientGain  = null;
+let isMuted      = true;   // muted by default (autoplay policy)
+let ambientReady = false;  // true once ambient nodes have been built
+
+// ── Lazy init ───────────────────────────────────────────────────
+// Called on the first user interaction so the AudioContext is
+// created inside a gesture handler, which satisfies every browser.
+function ensureAudio() {
+  if (audioCtx) {
+    // Resume if suspended (e.g. after page was backgrounded)
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return;
+  }
+
+  audioCtx   = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.setValueAtTime(0, audioCtx.currentTime); // start muted
+  masterGain.connect(audioCtx.destination);
+}
+
+// ── Mute toggle ─────────────────────────────────────────────────
+function toggleMute() {
+  ensureAudio();
+  isMuted = !isMuted;
+
+  const now    = audioCtx.currentTime;
+  const target = isMuted ? 0 : 1;
+  masterGain.gain.cancelScheduledValues(now);
+  masterGain.gain.setValueAtTime(masterGain.gain.value, now);
+  masterGain.gain.linearRampToValueAtTime(target, now + 0.08);
+
+  if (!isMuted && !ambientReady) {
+    buildAmbient();
+    ambientReady = true;
+  }
+
+  draw();
+}
+
+// ── Chime — soft woodwind/flute breath ──────────────────────────
+// Technique: sine wave with a short noise burst layered underneath,
+// shaped with a breath-like attack envelope.
+// Two detuned sines (fundamental + soft fifth) give a flute-ish
+// hollow quality. A bandpass-filtered noise node adds the "breath".
+function playChime() {
+  ensureAudio();
+  if (!audioCtx) return;
+
+  const now = audioCtx.currentTime;
+
+  // Shared output gain for this chime event
+  const out = audioCtx.createGain();
+  out.connect(masterGain);
+
+  // ── Fundamental + fifth ──────────────────────────────────────
+  const notes = [
+    { freq: 880,  gainPeak: 0.18 },   // A5  — bright but soft
+    { freq: 1320, gainPeak: 0.09 },   // E6  — perfect fifth above
+    { freq: 1760, gainPeak: 0.04 },   // A6  — faint upper octave
+  ];
+
+  notes.forEach(({ freq, gainPeak }, idx) => {
+    const osc  = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type      = 'sine';
+    osc.frequency.setValueAtTime(freq, now);
+    // Tiny vibrato to soften the pure sine tone
+    const lfo = audioCtx.createOscillator();
+    const lfoG = audioCtx.createGain();
+    lfo.frequency.value  = 5.5;
+    lfoG.gain.value      = freq * 0.003;
+    lfo.connect(lfoG);
+    lfoG.connect(osc.frequency);
+    lfo.start(now);
+    lfo.stop(now + 1.4);
+
+    // Breath-like envelope: fast rise, slow exponential decay
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(gainPeak, now + 0.04 + idx * 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
+
+    osc.connect(gain);
+    gain.connect(out);
+    osc.start(now);
+    osc.stop(now + 1.4);
+  });
+
+  // ── Breath noise burst ───────────────────────────────────────
+  // Short pink-ish noise through a narrow bandpass gives the
+  // initial "puff" of a flute attack.
+  const bufLen   = audioCtx.sampleRate * 0.12;
+  const buffer   = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+  const data     = buffer.getChannelData(0);
+  let lastNoise  = 0;
+  for (let n = 0; n < bufLen; n++) {
+    // Simple pink approximation: low-pass the white noise
+    const white = Math.random() * 2 - 1;
+    lastNoise   = 0.97 * lastNoise + 0.03 * white;
+    data[n]     = lastNoise * 8; // boost before the bandpass attenuates it
+  }
+
+  const noiseNode = audioCtx.createBufferSource();
+  noiseNode.buffer = buffer;
+
+  const bp = audioCtx.createBiquadFilter();
+  bp.type            = 'bandpass';
+  bp.frequency.value = 900;
+  bp.Q.value         = 1.2;
+
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.setValueAtTime(0.12, now);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+
+  noiseNode.connect(bp);
+  bp.connect(noiseGain);
+  noiseGain.connect(out);
+  noiseNode.start(now);
+
+  // Clean up the output gain node after the sound finishes
+  out.gain.setValueAtTime(1, now);
+  setTimeout(() => { try { out.disconnect(); } catch(_) {} }, 1600);
+}
+
+// ── Ambient loop — gentle drifting tones ────────────────────────
+// Three low sine oscillators detuned slightly from each other,
+// slowly cross-fading in volume via individual LFOs.
+// Stays quietly underneath; feels like a distant wind chime or
+// a cosy late-afternoon hum.
+function buildAmbient() {
+  if (!audioCtx) return;
+
+  ambientGain = audioCtx.createGain();
+  ambientGain.gain.value = 0.055;  // very quiet
+  ambientGain.connect(masterGain);
+
+  const drones = [
+    { freq: 220.0, lfoRate: 0.07, lfoDepth: 0.6 },  // A3
+    { freq: 329.6, lfoRate: 0.05, lfoDepth: 0.5 },  // E4
+    { freq: 261.6, lfoRate: 0.09, lfoDepth: 0.4 },  // C4
+  ];
+
+  drones.forEach(({ freq, lfoRate, lfoDepth }) => {
+    const osc  = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+
+    // Slight detuning so they don't phase-cancel perfectly
+    osc.detune.value = (Math.random() - 0.5) * 6;
+
+    // Slow amplitude LFO — each drone breathes at its own rate
+    const lfo  = audioCtx.createOscillator();
+    const lfoG = audioCtx.createGain();
+    lfo.type           = 'sine';
+    lfo.frequency.value = lfoRate;
+    lfoG.gain.value    = lfoDepth;
+
+    // LFO modulates the gain: base 0.4, ± lfoDepth
+    gain.gain.value = 0.4;
+    lfo.connect(lfoG);
+    lfoG.connect(gain.gain);
+
+    osc.connect(gain);
+    gain.connect(ambientGain);
+
+    osc.start();
+    lfo.start();
+    // Oscillators run indefinitely — they live for the page lifetime
+  });
+
+  // Fade the ambient in gently on first unmute
+  const now = audioCtx.currentTime;
+  ambientGain.gain.setValueAtTime(0, now);
+  ambientGain.gain.linearRampToValueAtTime(0.055, now + 2.5);
 }
 
 
@@ -114,10 +301,10 @@ function centredScrollFor(index) {
 
 // ─── Restart ────────────────────────────────────────────────────
 function restartGame() {
-  state           = initState();
-  scrollX         = 0;
-  velocity        = 0;
-  isAutoScrolling = false;
+  state            = initState();
+  scrollX          = 0;
+  velocity         = 0;
+  isAutoScrolling  = false;
   scoreBump.active = false;
   resetHint();
   loadImages();
@@ -156,8 +343,6 @@ function draw() {
   ctx.fillStyle = '#1a1008';
   ctx.fillRect(0, 0, W, H);
 
-  // Track whether any animation is still running this frame so we
-  // can schedule another rAF automatically if needed.
   let needsNextFrame = false;
 
   levels.forEach((lvl, i) => {
@@ -190,7 +375,7 @@ function draw() {
     const foxCX      = foxScreenX + foxScreenW / 2;
     const foxCY      = foxScreenY + foxScreenH / 2;
 
-    // ── Hint glow (stage 2) — drawn behind fox overlay ──────────
+    // Hint glow (stage 2)
     const currentIndex = state.findIndex(s => !s.foxFound);
     if (i === currentIndex && hintStage >= 2 && hintGlowAlpha > 0) {
       const cx = x + (lvl.foxX + lvl.hitboxWidth  / 2) * scaleX;
@@ -211,7 +396,7 @@ function draw() {
       needsNextFrame = true;
     }
 
-    // ── Pulse rings (6B) — drawn behind fox so rings radiate outward ──
+    // Pulse rings
     s.pulseRings = s.pulseRings.filter(ring => ring.alpha > 0);
     s.pulseRings.forEach(ring => {
       ctx.beginPath();
@@ -224,10 +409,9 @@ function draw() {
       if (ring.alpha > 0) needsNextFrame = true;
     });
 
-    // ── Fox overlay — drawn with bounce scale if active ──────────
+    // Fox overlay (with optional bounce scale)
     if (s.foxImg) {
       if (s.foxScale !== 1) {
-        // Draw scaled around fox centre
         ctx.save();
         ctx.translate(foxCX, foxCY);
         ctx.scale(s.foxScale, s.foxScale);
@@ -238,7 +422,7 @@ function draw() {
       }
     }
 
-    // ── Radial glow highlight (existing) ────────────────────────
+    // Radial glow highlight
     if (s.foxFound && s.highlightAlpha > 0) {
       const radius = Math.max(foxScreenW, foxScreenH) * 0.9;
       const grad   = ctx.createRadialGradient(foxCX, foxCY, 0, foxCX, foxCY, radius);
@@ -249,7 +433,6 @@ function draw() {
       ctx.arc(foxCX, foxCY, radius, 0, Math.PI * 2);
       ctx.fillStyle = grad;
       ctx.fill();
-      // Redraw fox on top of glow
       if (s.foxImg) {
         if (s.foxScale !== 1) {
           ctx.save();
@@ -274,7 +457,7 @@ function draw() {
     }
   });
 
-  drawHUD();           // includes hint button and score bump
+  drawHUD();
   drawScrollHints();
   drawHintText();
   drawCompletionScreen();
@@ -304,32 +487,27 @@ function drawHUD() {
 
   drawScoreBump(found);
   drawHintButton();
+  drawMuteButton();   // 6C
 }
 
-// ─── Score bump (6B) ────────────────────────────────────────────
-// A "+1" that floats upward from the score HUD and fades out.
+// ─── Score bump ─────────────────────────────────────────────────
 function drawScoreBump(found) {
   if (!scoreBump.active) return;
 
-  // Animate each frame
   scoreBump.offsetY += 1.4;
   scoreBump.alpha   -= 0.025;
   scoreBump.scale    = Math.max(1, scoreBump.scale - 0.018);
 
-  if (scoreBump.alpha <= 0) {
-    scoreBump.active = false;
-    return;
-  }
+  if (scoreBump.alpha <= 0) { scoreBump.active = false; return; }
 
-  // Position: just to the right of the score pill
-  const label  = `🦊 ${found} / ${levels.length}`;
-  ctx.font     = 'bold 20px sans-serif';
-  const pillW  = ctx.measureText(label).width + 12 * 2;
-  const bumpX  = 16 + pillW + 14;
-  const bumpY  = 36 - scoreBump.offsetY;
+  const label = `🦊 ${found} / ${levels.length}`;
+  ctx.font    = 'bold 20px sans-serif';
+  const pillW = ctx.measureText(label).width + 12 * 2;
+  const bumpX = 16 + pillW + 14;
+  const bumpY = 36 - scoreBump.offsetY;
 
   ctx.save();
-  ctx.globalAlpha = scoreBump.alpha;
+  ctx.globalAlpha  = scoreBump.alpha;
   ctx.translate(bumpX, bumpY);
   ctx.scale(scoreBump.scale, scoreBump.scale);
   ctx.font         = 'bold 22px sans-serif';
@@ -339,7 +517,6 @@ function drawScoreBump(found) {
   ctx.fillText('+1', 0, 0);
   ctx.restore();
 }
-
 
 // ─── Hint button ─────────────────────────────────────────────────
 function drawHintButton() {
@@ -363,6 +540,28 @@ function drawHintButton() {
 
 function hintButtonBounds() {
   return { x: canvas.width - 36, y: 36, r: 20 };
+}
+
+// ─── Mute button (6C) ────────────────────────────────────────────
+// Sits directly below the hint button in the top-right corner.
+// Shows 🔊 when sound is on, 🔇 when muted.
+function drawMuteButton() {
+  const { x, y, r } = muteButtonBounds();
+
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = isMuted ? 'rgba(60,60,60,0.75)' : 'rgba(80,140,100,0.85)';
+  ctx.fill();
+
+  ctx.font         = `${Math.round(r * 1.1)}px sans-serif`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(isMuted ? '🔇' : '🔊', x, y);
+}
+
+function muteButtonBounds() {
+  // Below the hint button (hint is at y=36, r=20; gap of 12px; mute r=18)
+  return { x: canvas.width - 36, y: 36 + 20 + 12 + 18, r: 18 };
 }
 
 
@@ -508,45 +707,31 @@ function scrollToNextFacade() {
 }
 
 
-// ─── Find animations (6B) ───────────────────────────────────────
-// Fires all three animations simultaneously on fox tap:
-//   1. Pulse rings  — expand outward from fox centre
-//   2. Fox bounce   — scale pop that settles back to 1
-//   3. Score bump   — +1 floats up from the HUD
-//
-// The highlight glow (existing) continues to run in parallel via
-// startHighlightAnimation() called from handleTap().
-
+// ─── Find animations ─────────────────────────────────────────────
 function startFindAnimations(index) {
   const s = state[index];
 
-  // 1. Spawn three staggered pulse rings
   s.pulseRings = [
     { radius: 10, alpha: 0.9 },
     { radius: 10, alpha: 0.7 },
     { radius: 10, alpha: 0.5 },
   ];
-  // Small delay between rings so they don't all start at once
   setTimeout(() => { if (s.pulseRings.length < 6) s.pulseRings.push({ radius: 10, alpha: 0.75 }); }, 80);
   setTimeout(() => { if (s.pulseRings.length < 6) s.pulseRings.push({ radius: 10, alpha: 0.6  }); }, 160);
 
-  // 2. Fox scale bounce — spring curve driven by rAF
   animateFoxBounce(s);
-
-  // 3. Score +1 bump
   triggerScoreBump();
+  playChime();   // 6C
 }
 
-// Spring-like bounce: overshoots slightly then settles at 1.
-// Target scale = 1. We push it to 1.35 then let it oscillate down.
 function animateFoxBounce(s) {
   const keyframes = [
     { t: 0,   scale: 1.0  },
-    { t: 80,  scale: 1.35 },  // peak
-    { t: 200, scale: 0.88 },  // undershoot
-    { t: 300, scale: 1.08 },  // small overshoot
+    { t: 80,  scale: 1.35 },
+    { t: 200, scale: 0.88 },
+    { t: 300, scale: 1.08 },
     { t: 400, scale: 0.97 },
-    { t: 480, scale: 1.0  },  // settled
+    { t: 480, scale: 1.0  },
   ];
   const start = performance.now();
 
@@ -554,23 +739,16 @@ function animateFoxBounce(s) {
     const elapsed = now - start;
     const total   = keyframes[keyframes.length - 1].t;
 
-    if (elapsed >= total) {
-      s.foxScale = 1;
-      draw();
-      return;
-    }
+    if (elapsed >= total) { s.foxScale = 1; draw(); return; }
 
-    // Find surrounding keyframes and lerp
     let from = keyframes[0], to = keyframes[1];
     for (let k = 0; k < keyframes.length - 1; k++) {
       if (elapsed >= keyframes[k].t && elapsed < keyframes[k + 1].t) {
-        from = keyframes[k];
-        to   = keyframes[k + 1];
-        break;
+        from = keyframes[k]; to = keyframes[k + 1]; break;
       }
     }
-    const seg      = (elapsed - from.t) / (to.t - from.t);
-    s.foxScale     = from.scale + (to.scale - from.scale) * seg;
+    const seg  = (elapsed - from.t) / (to.t - from.t);
+    s.foxScale = from.scale + (to.scale - from.scale) * seg;
     draw();
     requestAnimationFrame(tick);
   }
@@ -583,6 +761,16 @@ function animateFoxBounce(s) {
 function handleTap(screenX, screenY) {
   if (dragDistance > TAP_THRESHOLD) return;
   if (handleCompletionTap(screenX, screenY)) return;
+
+  // Ensure AudioContext is live on first gesture (satisfies autoplay policy)
+  ensureAudio();
+
+  // Mute button
+  const { x: muteX, y: muteY, r: muteR } = muteButtonBounds();
+  if (Math.hypot(screenX - muteX, screenY - muteY) < muteR + 8) {
+    toggleMute();
+    return;
+  }
 
   // Hint button
   const { x: btnX, y: btnY, r: btnR } = hintButtonBounds();
@@ -609,7 +797,7 @@ function handleTap(screenX, screenY) {
 
     if (hit) {
       s.foxFound = true;
-      startFindAnimations(i);          // 6B — rings, bounce, score bump
+      startFindAnimations(i);
       startHighlightAnimation(i, () => {
         checkCompletion();
         resetHint();
@@ -718,7 +906,7 @@ function clampScroll(val) {
 }
 
 
-// ─── Highlight animation (radial glow, existing) ─────────────────
+// ─── Highlight animation ─────────────────────────────────────────
 function startHighlightAnimation(index, onComplete) {
   const s          = state[index];
   s.highlightAlpha = 0;
