@@ -74,4 +74,52 @@ const levels = [
       foxOpacity:   0.6,
       hint:         "Two small triangles peek above the roofline."
      },
-  ];
+     {
+      facade:       "assets/facades/facade_07.jpg",
+      fox:          "assets/foxes/fox_06.png",
+      foxX:         370,
+      foxY:         860,
+      foxWidth:     80,
+      foxHeight:    80,
+      hitboxWidth:  100,
+      hitboxHeight: 100,
+      foxOpacity:   0.6,
+      hint:         "Two small triangles peek above the roofline."
+     },
+     {
+      facade:       "assets/facades/facade_08.jpg",
+      fox:          "assets/foxes/fox_06.png",
+      foxX:         370,
+      foxY:         860,
+      foxWidth:     80,
+      foxHeight:    80,
+      hitboxWidth:  100,
+      hitboxHeight: 100,
+      foxOpacity:   0.6,
+      hint:         "Two small triangles peek above the roofline."
+     },
+     {
+      facade:       "assets/facades/facade_09.jpg",
+      fox:          "assets/foxes/fox_06.png",
+      foxX:         370,
+      foxY:         860,
+      foxWidth:     80,
+      foxHeight:    80,
+      hitboxWidth:  100,
+      hitboxHeight: 100,
+      foxOpacity:   0.6,
+      hint:         "Two small triangles peek above the roofline."
+     },
+     {
+      facade:       "assets/facades/facade_10.jpg",
+      fox:          "assets/foxes/fox_06.png",
+      foxX:         370,
+      foxY:         860,
+      foxWidth:     80,
+      foxHeight:    80,
+      hitboxWidth:  100,
+      hitboxHeight: 100,
+      foxOpacity:   0.6,
+      hint:         "Two small triangles peek above the roofline."
+     },
+    ];

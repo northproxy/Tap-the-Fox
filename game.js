@@ -1,9 +1,11 @@
 // === Tap the Fox — game.js ===
 // MVP 0.4 — hints (6A) + find animations (6B) + sound (6C)
+// + cinematic cover scroll (screens.js)
 // + centred start position
 // + smooth auto-scroll to next facade after fox found
 // Level data  → levels.js
 // UI overlays → ui.js
+// Start/level screens → screens.js
 
 // ─── Canvas setup ───────────────────────────────────────────────
 const canvas = document.getElementById('gameCanvas');
@@ -12,6 +14,7 @@ const ctx    = canvas.getContext('2d');
 function resizeCanvas() {
   canvas.width  = window.innerWidth;
   canvas.height = window.innerHeight;
+  if (isCinematicActive()) return; // cinematic owns the draw loop
   draw();
 }
 window.addEventListener('resize', resizeCanvas);
@@ -32,6 +35,10 @@ function initState() {
 }
 
 let state = initState();
+
+// Which level (0-based) the player is currently on.
+// Advances after each fox is found.
+let currentLevelIndex = 0;
 
 // Scrolling
 let scrollX      = 0;
@@ -72,195 +79,108 @@ function triggerScoreBump() {
 
 
 // ════════════════════════════════════════════════════════════════
-// 6C — AUDIO ENGINE
-// All sound is synthesised via Web Audio API — no external files.
-//
-// Architecture:
-//   AudioContext  (created on first user gesture, per browser policy)
-//   │
-//   ├─ masterGain  (overall volume — set to 0 when muted)
-//   │   ├─ chimeGain   → chime oscillators
-//   │   └─ ambientGain → ambient oscillator network
-//
-// Mute works by ramping masterGain to 0/1, so no clicks.
-// Ambient starts suspended; first unmute kick-starts it.
+// AUDIO ENGINE (6C)
 // ════════════════════════════════════════════════════════════════
 
 let audioCtx     = null;
 let masterGain   = null;
 let ambientGain  = null;
-let isMuted      = true;   // muted by default (autoplay policy)
-let ambientReady = false;  // true once ambient nodes have been built
+let isMuted      = true;
+let ambientReady = false;
 
-// ── Lazy init ───────────────────────────────────────────────────
-// Called on the first user interaction so the AudioContext is
-// created inside a gesture handler, which satisfies every browser.
 function ensureAudio() {
   if (audioCtx) {
-    // Resume if suspended (e.g. after page was backgrounded)
     if (audioCtx.state === 'suspended') audioCtx.resume();
     return;
   }
-
   audioCtx   = new (window.AudioContext || window.webkitAudioContext)();
   masterGain = audioCtx.createGain();
-  masterGain.gain.setValueAtTime(0, audioCtx.currentTime); // start muted
+  masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
   masterGain.connect(audioCtx.destination);
 }
 
-// ── Mute toggle ─────────────────────────────────────────────────
 function toggleMute() {
   ensureAudio();
   isMuted = !isMuted;
-
   const now    = audioCtx.currentTime;
   const target = isMuted ? 0 : 1;
   masterGain.gain.cancelScheduledValues(now);
   masterGain.gain.setValueAtTime(masterGain.gain.value, now);
   masterGain.gain.linearRampToValueAtTime(target, now + 0.08);
-
-  if (!isMuted && !ambientReady) {
-    buildAmbient();
-    ambientReady = true;
-  }
-
+  if (!isMuted && !ambientReady) { buildAmbient(); ambientReady = true; }
   draw();
 }
 
-// ── Chime — soft woodwind/flute breath ──────────────────────────
-// Technique: sine wave with a short noise burst layered underneath,
-// shaped with a breath-like attack envelope.
-// Two detuned sines (fundamental + soft fifth) give a flute-ish
-// hollow quality. A bandpass-filtered noise node adds the "breath".
 function playChime() {
   ensureAudio();
   if (!audioCtx) return;
-
   const now = audioCtx.currentTime;
-
-  // Shared output gain for this chime event
-  const out = audioCtx.createGain();
+  const out  = audioCtx.createGain();
   out.connect(masterGain);
 
-  // ── Fundamental + fifth ──────────────────────────────────────
-  const notes = [
-    { freq: 880,  gainPeak: 0.18 },   // A5  — bright but soft
-    { freq: 1320, gainPeak: 0.09 },   // E6  — perfect fifth above
-    { freq: 1760, gainPeak: 0.04 },   // A6  — faint upper octave
-  ];
+  [{ freq: 880, gainPeak: 0.18 }, { freq: 1320, gainPeak: 0.09 }, { freq: 1760, gainPeak: 0.04 }]
+    .forEach(({ freq, gainPeak }, idx) => {
+      const osc  = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+      const lfo  = audioCtx.createOscillator();
+      const lfoG = audioCtx.createGain();
+      lfo.frequency.value = 5.5;
+      lfoG.gain.value     = freq * 0.003;
+      lfo.connect(lfoG); lfoG.connect(osc.frequency);
+      lfo.start(now); lfo.stop(now + 1.4);
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(gainPeak, now + 0.04 + idx * 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
+      osc.connect(gain); gain.connect(out);
+      osc.start(now); osc.stop(now + 1.4);
+    });
 
-  notes.forEach(({ freq, gainPeak }, idx) => {
-    const osc  = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-
-    osc.type      = 'sine';
-    osc.frequency.setValueAtTime(freq, now);
-    // Tiny vibrato to soften the pure sine tone
-    const lfo = audioCtx.createOscillator();
-    const lfoG = audioCtx.createGain();
-    lfo.frequency.value  = 5.5;
-    lfoG.gain.value      = freq * 0.003;
-    lfo.connect(lfoG);
-    lfoG.connect(osc.frequency);
-    lfo.start(now);
-    lfo.stop(now + 1.4);
-
-    // Breath-like envelope: fast rise, slow exponential decay
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(gainPeak, now + 0.04 + idx * 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
-
-    osc.connect(gain);
-    gain.connect(out);
-    osc.start(now);
-    osc.stop(now + 1.4);
-  });
-
-  // ── Breath noise burst ───────────────────────────────────────
-  // Short pink-ish noise through a narrow bandpass gives the
-  // initial "puff" of a flute attack.
-  const bufLen   = audioCtx.sampleRate * 0.12;
-  const buffer   = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
-  const data     = buffer.getChannelData(0);
-  let lastNoise  = 0;
+  const bufLen  = audioCtx.sampleRate * 0.12;
+  const buffer  = audioCtx.createBuffer(1, bufLen, audioCtx.sampleRate);
+  const data    = buffer.getChannelData(0);
+  let lastNoise = 0;
   for (let n = 0; n < bufLen; n++) {
-    // Simple pink approximation: low-pass the white noise
     const white = Math.random() * 2 - 1;
     lastNoise   = 0.97 * lastNoise + 0.03 * white;
-    data[n]     = lastNoise * 8; // boost before the bandpass attenuates it
+    data[n]     = lastNoise * 8;
   }
-
-  const noiseNode = audioCtx.createBufferSource();
+  const noiseNode  = audioCtx.createBufferSource();
   noiseNode.buffer = buffer;
-
-  const bp = audioCtx.createBiquadFilter();
-  bp.type            = 'bandpass';
-  bp.frequency.value = 900;
-  bp.Q.value         = 1.2;
-
-  const noiseGain = audioCtx.createGain();
+  const bp         = audioCtx.createBiquadFilter();
+  bp.type          = 'bandpass';
+  bp.frequency.value = 900; bp.Q.value = 1.2;
+  const noiseGain  = audioCtx.createGain();
   noiseGain.gain.setValueAtTime(0.12, now);
   noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
-
-  noiseNode.connect(bp);
-  bp.connect(noiseGain);
-  noiseGain.connect(out);
+  noiseNode.connect(bp); bp.connect(noiseGain); noiseGain.connect(out);
   noiseNode.start(now);
-
-  // Clean up the output gain node after the sound finishes
-  out.gain.setValueAtTime(1, now);
   setTimeout(() => { try { out.disconnect(); } catch(_) {} }, 1600);
 }
 
-// ── Ambient loop — gentle drifting tones ────────────────────────
-// Three low sine oscillators detuned slightly from each other,
-// slowly cross-fading in volume via individual LFOs.
-// Stays quietly underneath; feels like a distant wind chime or
-// a cosy late-afternoon hum.
 function buildAmbient() {
   if (!audioCtx) return;
-
   ambientGain = audioCtx.createGain();
-  ambientGain.gain.value = 0.055;  // very quiet
+  ambientGain.gain.value = 0;
   ambientGain.connect(masterGain);
-
-  const drones = [
-    { freq: 220.0, lfoRate: 0.07, lfoDepth: 0.6 },  // A3
-    { freq: 329.6, lfoRate: 0.05, lfoDepth: 0.5 },  // E4
-    { freq: 261.6, lfoRate: 0.09, lfoDepth: 0.4 },  // C4
-  ];
-
-  drones.forEach(({ freq, lfoRate, lfoDepth }) => {
-    const osc  = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-
-    osc.type = 'sine';
-    osc.frequency.value = freq;
-
-    // Slight detuning so they don't phase-cancel perfectly
-    osc.detune.value = (Math.random() - 0.5) * 6;
-
-    // Slow amplitude LFO — each drone breathes at its own rate
-    const lfo  = audioCtx.createOscillator();
-    const lfoG = audioCtx.createGain();
-    lfo.type           = 'sine';
-    lfo.frequency.value = lfoRate;
-    lfoG.gain.value    = lfoDepth;
-
-    // LFO modulates the gain: base 0.4, ± lfoDepth
-    gain.gain.value = 0.4;
-    lfo.connect(lfoG);
-    lfoG.connect(gain.gain);
-
-    osc.connect(gain);
-    gain.connect(ambientGain);
-
-    osc.start();
-    lfo.start();
-    // Oscillators run indefinitely — they live for the page lifetime
-  });
-
-  // Fade the ambient in gently on first unmute
+  [{ freq: 220.0, lfoRate: 0.07, lfoDepth: 0.6 },
+   { freq: 329.6, lfoRate: 0.05, lfoDepth: 0.5 },
+   { freq: 261.6, lfoRate: 0.09, lfoDepth: 0.4 }]
+    .forEach(({ freq, lfoRate, lfoDepth }) => {
+      const osc  = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      osc.detune.value    = (Math.random() - 0.5) * 6;
+      const lfo  = audioCtx.createOscillator();
+      const lfoG = audioCtx.createGain();
+      lfo.type = 'sine'; lfo.frequency.value = lfoRate; lfoG.gain.value = lfoDepth;
+      gain.gain.value = 0.4;
+      lfo.connect(lfoG); lfoG.connect(gain.gain);
+      osc.connect(gain); gain.connect(ambientGain);
+      osc.start(); lfo.start();
+    });
   const now = audioCtx.currentTime;
   ambientGain.gain.setValueAtTime(0, now);
   ambientGain.gain.linearRampToValueAtTime(0.055, now + 2.5);
@@ -271,12 +191,10 @@ function buildAmbient() {
 function loadImages() {
   levels.forEach((lvl, i) => {
     const s = state[i];
-
     const fImg = new Image();
     fImg.onload  = () => { s.facadeImg = fImg; s.facadeLoaded = true; centreFirstFacade(); draw(); };
     fImg.onerror = () => {                      s.facadeLoaded = true; draw(); };
     fImg.src = lvl.facade;
-
     const xImg = new Image();
     xImg.onload  = () => { s.foxImg = xImg; s.foxLoaded = true; draw(); };
     xImg.onerror = () => {                   s.foxLoaded = true; draw(); };
@@ -301,14 +219,16 @@ function centredScrollFor(index) {
 
 // ─── Restart ────────────────────────────────────────────────────
 function restartGame() {
-  state            = initState();
-  scrollX          = 0;
-  velocity         = 0;
-  isAutoScrolling  = false;
-  scoreBump.active = false;
+  state             = initState();
+  scrollX           = 0;
+  velocity          = 0;
+  isAutoScrolling   = false;
+  currentLevelIndex = 0;
+  scoreBump.active  = false;
   resetHint();
   loadImages();
-  draw();
+  // Re-run the opening cinematic
+  showCinematic({ label: 'Tap to play', onComplete: startPlaying });
 }
 
 
@@ -337,6 +257,8 @@ function totalStreetWidth() {
 
 // ─── Drawing ────────────────────────────────────────────────────
 function draw() {
+  if (isCinematicActive()) return; // cinematic owns the loop
+
   const W = canvas.width;
   const H = canvas.height;
 
@@ -352,7 +274,6 @@ function draw() {
 
     if (x + dw < 0 || x > W) return;
 
-    // Facade
     if (s.facadeImg) {
       ctx.drawImage(s.facadeImg, x, 0, dw, H);
     } else {
@@ -380,17 +301,14 @@ function draw() {
     if (i === currentIndex && hintStage >= 2 && hintGlowAlpha > 0) {
       const cx = x + (lvl.foxX + lvl.hitboxWidth  / 2) * scaleX;
       const cy =     (lvl.foxY + lvl.hitboxHeight / 2) * scaleY;
-
       const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, hintGlowRadius);
       grad.addColorStop(0,   `rgba(255, 200, 80, ${hintGlowAlpha * 0.35})`);
       grad.addColorStop(0.5, `rgba(255, 160, 40, ${hintGlowAlpha * 0.15})`);
       grad.addColorStop(1,   `rgba(255, 140, 20, 0)`);
-
       ctx.beginPath();
       ctx.arc(cx, cy, hintGlowRadius, 0, Math.PI * 2);
       ctx.fillStyle = grad;
       ctx.fill();
-
       if (hintGlowRadius < 120) hintGlowRadius += 3;
       if (hintGlowAlpha  < 1)   hintGlowAlpha   = Math.min(1, hintGlowAlpha + 0.04);
       needsNextFrame = true;
@@ -409,7 +327,7 @@ function draw() {
       if (ring.alpha > 0) needsNextFrame = true;
     });
 
-    // Fox overlay (with optional bounce scale)
+    // Fox overlay
     if (s.foxImg) {
       if (s.foxScale !== 1) {
         ctx.save();
@@ -487,25 +405,20 @@ function drawHUD() {
 
   drawScoreBump(found);
   drawHintButton();
-  drawMuteButton();   // 6C
+  drawMuteButton();
 }
 
-// ─── Score bump ─────────────────────────────────────────────────
 function drawScoreBump(found) {
   if (!scoreBump.active) return;
-
   scoreBump.offsetY += 1.4;
   scoreBump.alpha   -= 0.025;
   scoreBump.scale    = Math.max(1, scoreBump.scale - 0.018);
-
   if (scoreBump.alpha <= 0) { scoreBump.active = false; return; }
-
   const label = `🦊 ${found} / ${levels.length}`;
   ctx.font    = 'bold 20px sans-serif';
   const pillW = ctx.measureText(label).width + 12 * 2;
   const bumpX = 16 + pillW + 14;
   const bumpY = 36 - scoreBump.offsetY;
-
   ctx.save();
   ctx.globalAlpha  = scoreBump.alpha;
   ctx.translate(bumpX, bumpY);
@@ -518,19 +431,15 @@ function drawScoreBump(found) {
   ctx.restore();
 }
 
-// ─── Hint button ─────────────────────────────────────────────────
 function drawHintButton() {
   const allFound = state.every(s => s.foxFound);
   if (allFound) return;
-
   const { x: btnX, y: btnY, r: btnR } = hintButtonBounds();
   const used = hintStage >= 2;
-
   ctx.beginPath();
   ctx.arc(btnX, btnY, btnR, 0, Math.PI * 2);
   ctx.fillStyle = (hintCooldown || used) ? 'rgba(80,80,80,0.75)' : 'rgba(245,166,35,0.90)';
   ctx.fill();
-
   ctx.font         = `bold ${Math.round(btnR)}px sans-serif`;
   ctx.fillStyle    = used ? 'rgba(200,200,200,0.5)' : '#fff';
   ctx.textAlign    = 'center';
@@ -542,17 +451,12 @@ function hintButtonBounds() {
   return { x: canvas.width - 36, y: 36, r: 20 };
 }
 
-// ─── Mute button (6C) ────────────────────────────────────────────
-// Sits directly below the hint button in the top-right corner.
-// Shows 🔊 when sound is on, 🔇 when muted.
 function drawMuteButton() {
   const { x, y, r } = muteButtonBounds();
-
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fillStyle = isMuted ? 'rgba(60,60,60,0.75)' : 'rgba(80,140,100,0.85)';
   ctx.fill();
-
   ctx.font         = `${Math.round(r * 1.1)}px sans-serif`;
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
@@ -560,7 +464,6 @@ function drawMuteButton() {
 }
 
 function muteButtonBounds() {
-  // Below the hint button (hint is at y=36, r=20; gap of 12px; mute r=18)
   return { x: canvas.width - 36, y: 36 + 20 + 12 + 18, r: 18 };
 }
 
@@ -568,19 +471,15 @@ function muteButtonBounds() {
 // ─── Hint text pill ──────────────────────────────────────────────
 function drawHintText() {
   if (hintStage < 1 || hintTextAlpha <= 0) return;
-
   if (hintTextAlpha < 1) {
     hintTextAlpha = Math.min(1, hintTextAlpha + 0.03);
     requestAnimationFrame(draw);
   }
-
   const currentIndex = state.findIndex(s => !s.foxFound);
   if (currentIndex === -1) return;
-
   const text = levels[currentIndex].hint || 'Keep looking…';
   const W    = canvas.width;
   const H    = canvas.height;
-
   ctx.font = '15px sans-serif';
   const textW  = ctx.measureText(text).width;
   const boxPad = 18;
@@ -588,24 +487,19 @@ function drawHintText() {
   const boxH   = 44;
   const boxX   = (W - boxW) / 2;
   const boxY   = H - boxH - 24;
-
   ctx.save();
   ctx.globalAlpha = hintTextAlpha;
-
-  ctx.fillStyle = 'rgba(20, 12, 0, 0.82)';
+  ctx.fillStyle   = 'rgba(20, 12, 0, 0.82)';
   roundRect(ctx, boxX, boxY, boxW, boxH, 22);
   ctx.fill();
-
   ctx.strokeStyle = 'rgba(245, 166, 35, 0.6)';
   ctx.lineWidth   = 1.5;
   roundRect(ctx, boxX, boxY, boxW, boxH, 22);
   ctx.stroke();
-
   ctx.fillStyle    = '#ffd580';
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, W / 2, boxY + boxH / 2);
-
   ctx.restore();
 }
 
@@ -695,10 +589,8 @@ function scrollToNextFacade() {
     const elapsed  = now - startTime;
     const progress = Math.min(elapsed / duration, 1);
     const eased    = 1 - Math.pow(1 - progress, 3);
-
     scrollX = clampScroll(startScrollX + distance * eased);
     draw();
-
     if (progress < 1) requestAnimationFrame(step);
     else isAutoScrolling = false;
   }
@@ -707,10 +599,24 @@ function scrollToNextFacade() {
 }
 
 
+// ─── Level transition cinematic ──────────────────────────────────
+// Called after a fox is found and the glow animation completes.
+// Shows the cinematic with "Tap to continue", then resumes the game.
+function showLevelTransition(onDone) {
+  showCinematic({
+    label:      'Tap to continue',
+    onComplete: () => {
+      resetHint();
+      scrollToNextFacade();
+      if (onDone) onDone();
+    },
+  });
+}
+
+
 // ─── Find animations ─────────────────────────────────────────────
 function startFindAnimations(index) {
   const s = state[index];
-
   s.pulseRings = [
     { radius: 10, alpha: 0.9 },
     { radius: 10, alpha: 0.7 },
@@ -718,10 +624,9 @@ function startFindAnimations(index) {
   ];
   setTimeout(() => { if (s.pulseRings.length < 6) s.pulseRings.push({ radius: 10, alpha: 0.75 }); }, 80);
   setTimeout(() => { if (s.pulseRings.length < 6) s.pulseRings.push({ radius: 10, alpha: 0.6  }); }, 160);
-
   animateFoxBounce(s);
   triggerScoreBump();
-  playChime();   // 6C
+  playChime();
 }
 
 function animateFoxBounce(s) {
@@ -734,25 +639,20 @@ function animateFoxBounce(s) {
     { t: 480, scale: 1.0  },
   ];
   const start = performance.now();
-
   function tick(now) {
     const elapsed = now - start;
     const total   = keyframes[keyframes.length - 1].t;
-
     if (elapsed >= total) { s.foxScale = 1; draw(); return; }
-
     let from = keyframes[0], to = keyframes[1];
     for (let k = 0; k < keyframes.length - 1; k++) {
       if (elapsed >= keyframes[k].t && elapsed < keyframes[k + 1].t) {
         from = keyframes[k]; to = keyframes[k + 1]; break;
       }
     }
-    const seg  = (elapsed - from.t) / (to.t - from.t);
-    s.foxScale = from.scale + (to.scale - from.scale) * seg;
+    s.foxScale = from.scale + (to.scale - from.scale) * ((elapsed - from.t) / (to.t - from.t));
     draw();
     requestAnimationFrame(tick);
   }
-
   requestAnimationFrame(tick);
 }
 
@@ -760,23 +660,24 @@ function animateFoxBounce(s) {
 // ─── Tap detection ──────────────────────────────────────────────
 function handleTap(screenX, screenY) {
   if (dragDistance > TAP_THRESHOLD) return;
+
+  // Cinematic intercepts all taps while active
+  if (handleCinematicTap()) return;
+
   if (handleCompletionTap(screenX, screenY)) return;
 
-  // Ensure AudioContext is live on first gesture (satisfies autoplay policy)
   ensureAudio();
 
   // Mute button
   const { x: muteX, y: muteY, r: muteR } = muteButtonBounds();
   if (Math.hypot(screenX - muteX, screenY - muteY) < muteR + 8) {
-    toggleMute();
-    return;
+    toggleMute(); return;
   }
 
   // Hint button
   const { x: btnX, y: btnY, r: btnR } = hintButtonBounds();
   if (Math.hypot(screenX - btnX, screenY - btnY) < btnR + 8) {
-    handleHintTap();
-    return;
+    handleHintTap(); return;
   }
 
   // Fox hitbox
@@ -799,9 +700,14 @@ function handleTap(screenX, screenY) {
       s.foxFound = true;
       startFindAnimations(i);
       startHighlightAnimation(i, () => {
-        checkCompletion();
-        resetHint();
-        scrollToNextFacade();
+        const allDone = state.every(s => s.foxFound);
+        if (allDone) {
+          // All foxes found — show completion, no transition cinematic
+          checkCompletion();
+        } else {
+          // More levels remain — cinematic transition before next facade
+          showLevelTransition();
+        }
       });
     }
   });
@@ -812,36 +718,23 @@ function handleTap(screenX, screenY) {
 function handleHintTap() {
   if (hintCooldown) return;
   if (hintStage >= 2) return;
-
-  if (hintStage === 0) {
-    hintStage     = 1;
-    hintTextAlpha = 0.01;
-  } else if (hintStage === 1) {
-    hintStage     = 2;
-    hintGlowAlpha = 0.01;
-  }
-
+  if (hintStage === 0) { hintStage = 1; hintTextAlpha = 0.01; }
+  else if (hintStage === 1) { hintStage = 2; hintGlowAlpha = 0.01; }
   hintCooldown = true;
-  if (hintStage < 2) {
-    setTimeout(() => { hintCooldown = false; draw(); }, 3000);
-  }
-
+  if (hintStage < 2) setTimeout(() => { hintCooldown = false; draw(); }, 3000);
   draw();
 }
 
 
 // ─── Scrolling — mouse ──────────────────────────────────────────
 canvas.addEventListener('mousedown', (e) => {
-  if (isAutoScrolling) return;
-  isDragging   = true;
-  dragStartX   = e.clientX;
-  scrollAtDrag = scrollX;
-  dragDistance = 0;
-  velocity     = 0;
+  if (isAutoScrolling || isCinematicActive()) return;
+  isDragging = true; dragStartX = e.clientX;
+  scrollAtDrag = scrollX; dragDistance = 0; velocity = 0;
 });
 
 canvas.addEventListener('mousemove', (e) => {
-  if (!isDragging || isAutoScrolling) return;
+  if (!isDragging || isAutoScrolling || isCinematicActive()) return;
   const delta  = dragStartX - e.clientX;
   dragDistance = Math.abs(delta);
   velocity     = e.clientX - lastDragX;
@@ -857,19 +750,15 @@ canvas.addEventListener('mouseleave', ()  => { isDragging = false; });
 // ─── Scrolling — touch ──────────────────────────────────────────
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  if (isAutoScrolling) return;
-  const t      = e.touches[0];
-  isDragging   = true;
-  dragStartX   = t.clientX;
-  scrollAtDrag = scrollX;
-  dragDistance = 0;
-  velocity     = 0;
-  lastDragX    = t.clientX;
+  if (isAutoScrolling || isCinematicActive()) return;
+  const t = e.touches[0];
+  isDragging = true; dragStartX = t.clientX;
+  scrollAtDrag = scrollX; dragDistance = 0; velocity = 0; lastDragX = t.clientX;
 }, { passive: false });
 
 canvas.addEventListener('touchmove', (e) => {
   e.preventDefault();
-  if (!isDragging || isAutoScrolling) return;
+  if (!isDragging || isAutoScrolling || isCinematicActive()) return;
   const t      = e.touches[0];
   const delta  = dragStartX - t.clientX;
   dragDistance = Math.abs(delta);
@@ -882,7 +771,7 @@ canvas.addEventListener('touchmove', (e) => {
 canvas.addEventListener('touchend', (e) => {
   e.preventDefault();
   isDragging = false;
-  const t    = e.changedTouches[0];
+  const t = e.changedTouches[0];
   startMomentum();
   handleTap(t.clientX, t.clientY);
 }, { passive: false });
@@ -890,7 +779,7 @@ canvas.addEventListener('touchend', (e) => {
 
 // ─── Momentum scrolling ─────────────────────────────────────────
 function startMomentum() {
-  if (Math.abs(velocity) < 1 || isAutoScrolling) return;
+  if (Math.abs(velocity) < 1 || isAutoScrolling || isCinematicActive()) return;
   function step() {
     velocity *= 0.92;
     scrollX   = clampScroll(scrollX - velocity);
@@ -916,14 +805,11 @@ function startHighlightAnimation(index, onComplete) {
 
   function animate(now) {
     const elapsed = now - startTime;
-    if (elapsed < peakAt) {
-      s.highlightAlpha = elapsed / peakAt;
-    } else {
-      s.highlightAlpha = 1 - (elapsed - peakAt) / (duration - peakAt);
-    }
+    s.highlightAlpha = elapsed < peakAt
+      ? elapsed / peakAt
+      : 1 - (elapsed - peakAt) / (duration - peakAt);
     s.highlightAlpha = Math.max(0, Math.min(1, s.highlightAlpha));
     draw();
-
     if (elapsed < duration) {
       requestAnimationFrame(animate);
     } else {
@@ -936,6 +822,15 @@ function startHighlightAnimation(index, onComplete) {
 }
 
 
+// ─── Game entry point ────────────────────────────────────────────
+// Called by the cinematic's onComplete when the player taps to play.
+function startPlaying() {
+  scrollX = centredScrollFor(0);
+  draw();
+}
+
+
 // ─── Start ──────────────────────────────────────────────────────
 loadImages();
 resizeCanvas();
+showCinematic({ label: 'Tap to play', onComplete: startPlaying });
