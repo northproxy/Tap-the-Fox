@@ -206,14 +206,21 @@ function loadImages() {
 // ─── Centred start ──────────────────────────────────────────────
 function centreFirstFacade() {
   if (state[0].facadeImg) scrollX = centredScrollFor(0);
+
+  // Phase 7 — Change 1+2: init Screens and fire the opening cinematic
+  // once (guarded by _cinematicReady so it only runs on the first load).
+  if (!centreFirstFacade._cinematicReady && state[0].facadeImg) {
+    centreFirstFacade._cinematicReady = true;
+    Screens.init(canvas, ctx, state, levels);
+    Screens.showCinematic(0, () => startPlaying());
+  }
 }
 
 function centredScrollFor(index) {
   const W  = canvas.width;
   const dw = facadeDrawWidth(index);
-  let streetX = 0;
-  for (let i = 0; i < index; i++) streetX += facadeDrawWidth(i) + GAP;
-  return clampScroll(streetX + dw / 2 - W / 2);
+  // Add pre-roll offset so scrollX=0 is the start of the pre-roll block
+  return clampScroll(Screens.prerollWidth() + streetLeft(index) + dw / 2 - W / 2);
 }
 
 
@@ -226,14 +233,14 @@ function restartGame() {
   currentLevelIndex = 0;
   scoreBump.active  = false;
   resetHint();
+  centreFirstFacade._cinematicReady = false;  // allow cinematic to re-fire
   loadImages();
-  // Re-run the opening cinematic
-  showCinematic({ label: 'Tap to play', onComplete: startPlaying });
+  // Opening cinematic re-fires automatically from centreFirstFacade()
 }
 
 
 // ─── Layout helpers ─────────────────────────────────────────────
-const GAP = 24;
+const GAP = 0;
 
 function facadeDrawWidth(index) {
   const img = state[index].facadeImg;
@@ -242,10 +249,16 @@ function facadeDrawWidth(index) {
   return Math.round((img.naturalWidth / img.naturalHeight) * H);
 }
 
-function facadeLeft(index) {
+// Street-left of facade[index], not counting pre-roll offset.
+function streetLeft(index) {
   let x = 0;
   for (let i = 0; i < index; i++) x += facadeDrawWidth(i) + GAP;
-  return x - scrollX;
+  return x;
+}
+
+// Screen X of facade[index]. scrollX=prerollWidth() centres on facade_01.
+function facadeLeft(index) {
+  return Screens.prerollWidth() + streetLeft(index) - scrollX;
 }
 
 function totalStreetWidth() {
@@ -266,6 +279,28 @@ function draw() {
   ctx.fillRect(0, 0, W, H);
 
   let needsNextFrame = false;
+
+  // ── Pre-roll facades (last 3, drawn left of facade_01) ──────────
+  const PREROLL_COUNT = 3;
+  const pw = Screens.prerollWidth();
+  if (pw > 0) {
+    const preStart = Math.max(0, levels.length - PREROLL_COUNT);
+    let preStreet = -pw; // street-left of first pre-roll facade
+    for (let i = preStart; i < levels.length; i++) {
+      const s  = state[i];
+      const dw = facadeDrawWidth(i);
+      const x  = preStreet + pw - scrollX; // same offset logic as facadeLeft()
+      preStreet += dw + GAP;
+      if (x + dw < 0 || x > W) continue;
+      if (s.facadeImg) {
+        ctx.drawImage(s.facadeImg, x, 0, dw, H);
+      } else {
+        const colors = ['#c8a97a', '#b89060', '#d4b485'];
+        ctx.fillStyle = colors[i % colors.length];
+        ctx.fillRect(x, 0, dw, H);
+      }
+    }
+  }
 
   levels.forEach((lvl, i) => {
     const s  = state[i];
@@ -508,7 +543,7 @@ function drawHintText() {
 function drawScrollHints() {
   const W   = canvas.width;
   const H   = canvas.height;
-  const max = totalStreetWidth() - W;
+  const max = Screens.prerollWidth() + totalStreetWidth() - W;
   if (scrollX > 10)       drawArrow(28,     H / 2, 'left');
   if (scrollX < max - 10) drawArrow(W - 28, H / 2, 'right');
 }
@@ -599,18 +634,12 @@ function scrollToNextFacade() {
 }
 
 
-// ─── Level transition cinematic ──────────────────────────────────
-// Called after a fox is found and the glow animation completes.
-// Shows the cinematic with "Tap to continue", then resumes the game.
+// ─── Level transition ────────────────────────────────────────────
+// After a fox is found, scroll directly to the next facade.
 function showLevelTransition(onDone) {
-  showCinematic({
-    label:      'Tap to continue',
-    onComplete: () => {
-      resetHint();
-      scrollToNextFacade();
-      if (onDone) onDone();
-    },
-  });
+  resetHint();
+  scrollToNextFacade();
+  if (onDone) onDone();
 }
 
 
@@ -661,8 +690,8 @@ function animateFoxBounce(s) {
 function handleTap(screenX, screenY) {
   if (dragDistance > TAP_THRESHOLD) return;
 
-  // Cinematic intercepts all taps while active
-  if (handleCinematicTap()) return;
+  // Change 4: swallow tap if cinematic is playing
+  if (Screens.handleCinematicTap(screenX, screenY)) return;
 
   if (handleCompletionTap(screenX, screenY)) return;
 
@@ -790,7 +819,8 @@ function startMomentum() {
 }
 
 function clampScroll(val) {
-  const max = Math.max(0, totalStreetWidth() - canvas.width);
+  // Full scrollable range = pre-roll block + normal street
+  const max = Math.max(0, Screens.prerollWidth() + totalStreetWidth() - canvas.width);
   return Math.max(0, Math.min(max, val));
 }
 
@@ -833,4 +863,4 @@ function startPlaying() {
 // ─── Start ──────────────────────────────────────────────────────
 loadImages();
 resizeCanvas();
-showCinematic({ label: 'Tap to play', onComplete: startPlaying });
+// Opening cinematic fires automatically from centreFirstFacade() once images load.
